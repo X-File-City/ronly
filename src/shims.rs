@@ -1,3 +1,25 @@
+// Shim mechanism for tools that talk to sockets/APIs.
+//
+// Some tools (docker, kubectl) use Unix sockets or HTTP
+// APIs, not the filesystem, so a read-only mount doesn't
+// stop them. We intercept them via PATH:
+//
+// 1. During sandbox setup, ronly bind-mounts its own
+//    binary into /usr/lib/ronly/shims/ under each tool
+//    name (e.g., "docker"). This dir is prepended to
+//    $PATH.
+//
+// 2. When bash runs "docker ps", it finds
+//    /usr/lib/ronly/shims/docker — which IS ronly.
+//
+// 3. ronly's main() checks argv[0]. If it's "docker"
+//    (not "ronly"), it dispatches to shim_docker(),
+//    which either execs /usr/bin/docker for read-only
+//    subcommands or prints an error for write ops.
+//
+// Bind-mounts share the same inode as the original
+// binary — no copies, zero extra disk space.
+
 #![allow(dead_code)]
 use anyhow::Result;
 use std::fs;
@@ -5,7 +27,6 @@ use std::path::Path;
 
 pub const SHIMS_DIR: &str = "/usr/lib/ronly/shims";
 
-/// Tools we provide shims for.
 const SHIMMED_TOOLS: &[&str] =
     &["docker", "kubectl"];
 

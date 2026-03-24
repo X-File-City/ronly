@@ -30,9 +30,13 @@ gone — replaced by the shell process. No overhead, no interception.
    `mount`, `reboot`. `ptrace` write ops blocked but read ops allowed
    (so `strace` works). Defense in depth.
 
-4. **Tool shims** — Wrapper scripts on PATH for tools that talk to
-   sockets/APIs (Docker, kubectl). Read-only subcommands pass through;
-   everything else is blocked with a clear error.
+4. **Tool shims** — The ronly binary is bind-mounted into a shims
+   directory on PATH under names like `docker` and `kubectl`. When
+   the shell runs `docker ps`, it finds the shim, which is ronly
+   itself — ronly checks `argv[0]`, sees `"docker"`, and either
+   execs the real `/usr/bin/docker` (for read-only subcommands)
+   or prints an error and exits (for write subcommands). No shell
+   scripts, no extra binaries, zero disk overhead.
 
 ## Install
 
@@ -109,13 +113,28 @@ bash: kill: (1) - Operation not permitted
 
 ## Built-in shims
 
-- **docker** — allows `ps`, `logs`, `inspect`, `stats`, `top`,
-  `images`, `info`, `version`, `events`, `diff`,
-  `network ls/inspect`, `volume ls/inspect`
-- **kubectl** — allows `get`, `describe`, `logs`, `top`, `explain`,
-  `version`, `cluster-info`, `api-resources`, `api-versions`,
-  `config view/current-context/get-contexts`,
-  `auth can-i/whoami`
+Some tools talk to sockets or APIs rather than the filesystem, so
+a read-only mount doesn't stop them. Shims handle these.
+
+The shim mechanism uses an `argv[0]` dispatch trick: during sandbox
+setup, ronly bind-mounts its own binary into `/usr/lib/ronly/shims/`
+under each tool's name (e.g., `docker`, `kubectl`). This directory
+is prepended to `$PATH`. When the shell resolves `docker`, it finds
+the shim — which is just ronly. ronly checks `argv[0]`, recognizes
+it's being invoked as `docker`, and applies the allowlist. If the
+subcommand is read-only, ronly execs the real binary at `/usr/bin/docker`.
+Otherwise it prints an error and exits.
+
+No shell scripts. No copies of the binary (bind-mounts share the
+same inode). Zero disk overhead.
+
+**docker** — allows `ps`, `logs`, `inspect`, `stats`, `top`,
+`images`, `info`, `version`, `events`, `diff`,
+`network ls/inspect`, `volume ls/inspect`
+
+**kubectl** — allows `get`, `describe`, `logs`, `top`, `explain`,
+`version`, `cluster-info`, `api-resources`, `api-versions`,
+`config view/current-context/get-contexts`, `auth can-i/whoami`
 
 Everything not listed is blocked by default.
 

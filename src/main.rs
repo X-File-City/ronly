@@ -37,8 +37,9 @@ pub struct Args {
 }
 
 fn main() -> Result<()> {
-    // If invoked via symlink (argv[0] != "ronly"),
-    // act as that tool's shim.
+    // Shim dispatch: if argv[0] is "docker", "kubectl",
+    // etc. (because we were invoked via a bind-mount in
+    // the shims dir), handle it and exit. See shims.rs.
     if let Some(code) = shims::maybe_run_as_shim() {
         std::process::exit(code);
     }
