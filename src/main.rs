@@ -37,6 +37,12 @@ pub struct Args {
 }
 
 fn main() -> Result<()> {
+    // If invoked via symlink (argv[0] != "ronly"),
+    // act as that tool's shim.
+    if let Some(code) = shims::maybe_run_as_shim() {
+        std::process::exit(code);
+    }
+
     let args = Args::parse();
     sandbox::run(args)
 }

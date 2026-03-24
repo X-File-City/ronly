@@ -69,7 +69,7 @@ fn setup_mounts(args: &Args) -> Result<()> {
         shims::SHIMS_DIR,
         Some("tmpfs"),
         MsFlags::MS_NOSUID | MsFlags::MS_NODEV,
-        Some("size=4m"),
+        Some("size=8m"),
     )?;
 
     Ok(())
@@ -156,6 +156,13 @@ fn setup_seccomp() -> Result<()> {
 }
 
 pub fn run(args: Args) -> Result<()> {
+    // Read our binary before mounts (it may be under /tmp)
+    let self_bin = if !args.no_shims {
+        Some(shims::read_self_exe()?)
+    } else {
+        None
+    };
+
     // Unshare mount + PID namespace
     nix::sched::unshare(
         CloneFlags::CLONE_NEWNS | CloneFlags::CLONE_NEWPID,
@@ -175,19 +182,21 @@ pub fn run(args: Args) -> Result<()> {
             std::process::exit(code);
         }
         ForkResult::Child => {
-            // PID 1 in new namespace. Set up sandbox.
-            child_main(args);
+            child_main(args, self_bin);
         }
     }
 }
 
-fn child_main(args: Args) -> ! {
+fn child_main(
+    args: Args,
+    self_bin: Option<Vec<u8>>,
+) -> ! {
     if let Err(e) = setup_mounts(&args) {
         die(&format!("ronly: mounts: {}", e));
     }
 
-    if !args.no_shims {
-        if let Err(e) = shims::install_shims() {
+    if let Some(bin) = &self_bin {
+        if let Err(e) = shims::install_shims(bin) {
             die(&format!("ronly: shims: {}", e));
         }
 

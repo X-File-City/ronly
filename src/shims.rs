@@ -1,79 +1,162 @@
 #![allow(dead_code)]
 use anyhow::Result;
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
-
-const DOCKER_SHIM: &str = r#"#!/bin/sh
-REAL_DOCKER=/usr/bin/docker
-case "$1" in
-  ps|logs|inspect|stats|top|images|info|version|events|diff)
-    exec "$REAL_DOCKER" "$@"
-    ;;
-  network)
-    case "$2" in
-      ls|inspect) exec "$REAL_DOCKER" "$@" ;;
-    esac
-    ;;
-  volume)
-    case "$2" in
-      ls|inspect) exec "$REAL_DOCKER" "$@" ;;
-    esac
-    ;;
-  *)
-    echo "ronly: docker $1 is blocked (read-only session)" >&2
-    exit 1
-    ;;
-esac
-echo "ronly: docker $* is blocked (read-only session)" >&2
-exit 1
-"#;
-
-const KUBECTL_SHIM: &str = r#"#!/bin/sh
-REAL_KUBECTL=/usr/bin/kubectl
-case "$1" in
-  get|describe|logs|top|explain|version|cluster-info)
-    exec "$REAL_KUBECTL" "$@"
-    ;;
-  api-resources|api-versions)
-    exec "$REAL_KUBECTL" "$@"
-    ;;
-  config)
-    case "$2" in
-      view|current-context|get-contexts)
-        exec "$REAL_KUBECTL" "$@" ;;
-    esac
-    ;;
-  auth)
-    case "$2" in
-      can-i|whoami) exec "$REAL_KUBECTL" "$@" ;;
-    esac
-    ;;
-  *)
-    echo "ronly: kubectl $1 is blocked (read-only session)" >&2
-    exit 1
-    ;;
-esac
-echo "ronly: kubectl $* is blocked (read-only session)" >&2
-exit 1
-"#;
 
 pub const SHIMS_DIR: &str = "/usr/lib/ronly/shims";
 
-pub fn install_shims() -> Result<()> {
+/// Tools we provide shims for.
+const SHIMMED_TOOLS: &[&str] =
+    &["docker", "kubectl"];
+
+/// Read our own binary into memory. Must be called BEFORE
+/// mount setup (while the host FS is still visible), since
+/// the binary might be under /tmp which gets remounted.
+pub fn read_self_exe() -> Result<Vec<u8>> {
+    Ok(fs::read("/proc/self/exe")?)
+}
+
+/// Write copies of the binary into SHIMS_DIR under each
+/// tool name. Must be called AFTER shims tmpfs is mounted.
+pub fn install_shims(binary: &[u8]) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
     let dir = Path::new(SHIMS_DIR);
     fs::create_dir_all(dir)?;
-
-    let shims =
-        [("docker", DOCKER_SHIM), ("kubectl", KUBECTL_SHIM)];
-
-    for (name, content) in &shims {
-        let path = dir.join(name);
-        fs::write(&path, content)?;
+    for name in SHIMMED_TOOLS {
+        let dest = dir.join(name);
+        fs::write(&dest, binary)?;
         fs::set_permissions(
-            &path,
+            &dest,
             fs::Permissions::from_mode(0o755),
         )?;
     }
     Ok(())
+}
+
+
+/// Check if we were invoked as a shim (argv[0] is a tool
+/// name, not "ronly"). If so, handle it and exit.
+/// Returns None if we're running as ronly itself.
+pub fn maybe_run_as_shim() -> Option<i32> {
+    let argv0 = std::env::args().next()?;
+    let name = Path::new(&argv0)
+        .file_name()?
+        .to_str()?;
+
+    match name {
+        "docker" => Some(shim_docker()),
+        "kubectl" => Some(shim_kubectl()),
+        _ => None,
+    }
+}
+
+fn shim_docker() -> i32 {
+    let args: Vec<String> =
+        std::env::args().skip(1).collect();
+    let sub = args.first().map(|s| s.as_str());
+
+    match sub {
+        Some(
+            "ps" | "logs" | "inspect" | "stats" | "top"
+            | "images" | "info" | "version" | "events"
+            | "diff",
+        ) => exec_real("/usr/bin/docker"),
+        Some("network" | "volume") => {
+            let sub2 =
+                args.get(1).map(|s| s.as_str());
+            match sub2 {
+                Some("ls" | "inspect") => {
+                    exec_real("/usr/bin/docker")
+                }
+                _ => {
+                    let s = sub.unwrap();
+                    let s2 = sub2.unwrap_or("(none)");
+                    blocked("docker", &format!("{} {}", s, s2))
+                }
+            }
+        }
+        Some(s) => blocked("docker", s),
+        None => blocked("docker", "(no subcommand)"),
+    }
+}
+
+fn shim_kubectl() -> i32 {
+    let args: Vec<String> =
+        std::env::args().skip(1).collect();
+    let sub = args.first().map(|s| s.as_str());
+
+    match sub {
+        Some(
+            "get" | "describe" | "logs" | "top"
+            | "explain" | "version" | "cluster-info"
+            | "api-resources" | "api-versions",
+        ) => exec_real("/usr/bin/kubectl"),
+        Some("config") => {
+            let sub2 =
+                args.get(1).map(|s| s.as_str());
+            match sub2 {
+                Some(
+                    "view" | "current-context"
+                    | "get-contexts",
+                ) => exec_real("/usr/bin/kubectl"),
+                _ => blocked(
+                    "kubectl",
+                    &format!(
+                        "config {}",
+                        sub2.unwrap_or("(none)")
+                    ),
+                ),
+            }
+        }
+        Some("auth") => {
+            let sub2 =
+                args.get(1).map(|s| s.as_str());
+            match sub2 {
+                Some("can-i" | "whoami") => {
+                    exec_real("/usr/bin/kubectl")
+                }
+                _ => blocked(
+                    "kubectl",
+                    &format!(
+                        "auth {}",
+                        sub2.unwrap_or("(none)")
+                    ),
+                ),
+            }
+        }
+        Some(s) => blocked("kubectl", s),
+        None => blocked("kubectl", "(no subcommand)"),
+    }
+}
+
+fn blocked(tool: &str, sub: &str) -> i32 {
+    eprintln!(
+        "ronly: {} {} is blocked (read-only session)",
+        tool, sub
+    );
+    1
+}
+
+fn exec_real(bin: &str) -> i32 {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+
+    let args: Vec<CString> = std::env::args_os()
+        .map(|a| {
+            CString::new(a.as_bytes()).unwrap()
+        })
+        .collect();
+    let bin_c = CString::new(bin).unwrap();
+    let mut argv: Vec<*const libc::c_char> =
+        args.iter().map(|a| a.as_ptr()).collect();
+    // Replace argv[0] with real binary path
+    argv[0] = bin_c.as_ptr();
+    argv.push(std::ptr::null());
+    unsafe { libc::execv(bin_c.as_ptr(), argv.as_ptr()) };
+    // If we get here, exec failed
+    eprintln!(
+        "{}: command not found",
+        std::env::args().next().unwrap_or_default()
+    );
+    127
 }
