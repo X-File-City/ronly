@@ -21,11 +21,11 @@ case "$1" in
     esac
     ;;
   *)
-    echo "rosshd: docker $1 is blocked (read-only session)" >&2
+    echo "ronly: docker $1 is blocked (read-only session)" >&2
     exit 1
     ;;
 esac
-echo "rosshd: docker $* is blocked (read-only session)" >&2
+echo "ronly: docker $* is blocked (read-only session)" >&2
 exit 1
 "#;
 
@@ -40,32 +40,32 @@ case "$1" in
     ;;
   config)
     case "$2" in
-      view) exec "$REAL_KUBECTL" "$@" ;;
+      view|current-context|get-contexts)
+        exec "$REAL_KUBECTL" "$@" ;;
     esac
     ;;
   auth)
     case "$2" in
-      can-i) exec "$REAL_KUBECTL" "$@" ;;
+      can-i|whoami) exec "$REAL_KUBECTL" "$@" ;;
     esac
     ;;
   *)
-    echo "rosshd: kubectl $1 is blocked (read-only session)" >&2
+    echo "ronly: kubectl $1 is blocked (read-only session)" >&2
     exit 1
     ;;
 esac
-echo "rosshd: kubectl $* is blocked (read-only session)" >&2
+echo "ronly: kubectl $* is blocked (read-only session)" >&2
 exit 1
 "#;
 
-pub const SHIMS_DIR: &str = "/usr/lib/rosshd/shims";
+pub const SHIMS_DIR: &str = "/usr/lib/ronly/shims";
 
-/// Write shim scripts to the shims directory.
-/// Called during server startup.
 pub fn install_shims() -> Result<()> {
     let dir = Path::new(SHIMS_DIR);
     fs::create_dir_all(dir)?;
 
-    let shims = [("docker", DOCKER_SHIM), ("kubectl", KUBECTL_SHIM)];
+    let shims =
+        [("docker", DOCKER_SHIM), ("kubectl", KUBECTL_SHIM)];
 
     for (name, content) in &shims {
         let path = dir.join(name);

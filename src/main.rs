@@ -2,45 +2,41 @@ use anyhow::Result;
 use clap::Parser;
 use std::path::PathBuf;
 
-mod audit;
 mod sandbox;
-mod server;
 mod shims;
 
-#[derive(Parser, Clone)]
+#[derive(Parser)]
 #[command(
-    name = "rosshd",
-    about = "Read-only SSH server"
+    name = "ronly",
+    about = "Read-only sandbox for shells",
+    version
 )]
 pub struct Args {
-    /// Port to listen on
-    #[arg(long, default_value = "2222")]
-    pub port: u16,
+    /// Shell to exec (default: $SHELL or /bin/bash)
+    pub shell: Option<String>,
 
-    /// Path to host key (generated if missing)
-    #[arg(long, default_value = "/etc/rosshd/host_key")]
-    pub host_key: PathBuf,
+    /// Run a single command instead of interactive shell
+    #[arg(last = true)]
+    pub command: Vec<String>,
 
-    /// Path to authorized_keys file
-    #[arg(long, default_value = "/etc/rosshd/authorized_keys")]
-    pub authorized_keys: PathBuf,
+    /// Size of writable /tmp (e.g. 64M, 1G)
+    #[arg(long, default_value = "64M")]
+    pub tmpfs_size: String,
 
-    /// tmpfs size in MB for /tmp
-    #[arg(long, default_value = "64")]
-    pub tmpfs_size_mb: u64,
-
-    /// Log file path (stdout if not set)
+    /// Additional shim directory
     #[arg(long)]
-    pub log: Option<PathBuf>,
+    pub extra_shims: Vec<PathBuf>,
 
-    /// Additional shim directories (prepended to PATH)
+    /// Disable all shims (kernel isolation only)
     #[arg(long)]
-    pub shims: Vec<PathBuf>,
+    pub no_shims: bool,
+
+    /// Additional writable tmpfs overlay
+    #[arg(long)]
+    pub writable: Vec<PathBuf>,
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
-    env_logger::init();
+fn main() -> Result<()> {
     let args = Args::parse();
-    server::run(args).await
+    sandbox::run(args)
 }
