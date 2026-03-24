@@ -305,12 +305,9 @@ Test by:
 
 An agent can SSH into a production machine via rosshd and perform a full diagnostic investigation — check process state, read logs, query Kubernetes, inspect Docker containers, run perf — without any possibility of modifying the system. The admin's confidence that the agent cannot cause harm is based on kernel enforcement, not on trusting the agent's prompt or an LLM-based reviewer.
 
-## Implementation Status (2026-03-23)
+## Implementation Status
 
-### What's Done
-
-The MVP core is working. Single binary, tested on aarch64 Linux
-via lima:
+### Done (2026-03-23)
 
 - SSH server (`russh` 0.58) with pubkey auth
 - Read-only filesystem via `unshare(CLONE_NEWNS)` + remount
@@ -327,8 +324,11 @@ via lima:
 - Exec mode uses pipes (clean output), shell mode uses PTY
 - CLI: `--port`, `--host-key`, `--authorized-keys`,
   `--tmpfs-size-mb`, `--log`
+- 17 integration tests (`tests/integration.sh`), all passing
+- GitHub Actions CI (`.github/workflows/test.yml`)
+- `make test-lima` for local testing via lima VM
 
-### What's Missing from MVP Spec
+### Remaining MVP Gaps
 
 **PID namespace.** Spec calls for `CLONE_NEWPID` so `kill <pid>`
 fails because the PID doesn't exist in the agent's namespace.
@@ -349,36 +349,23 @@ breaks subprocesses (shims can't fork). Need to either:
   (PTRACE_ATTACH + PTRACE_PEEKDATA) for `strace`
 
 **Audit logging:** Logs every command as "allowed" — doesn't
-distinguish commands that were blocked by shims. Would need
-shim-level reporting or shell exit code tracking.
-
-**No tests.** Zero unit tests, zero integration tests.
+distinguish commands that were blocked by shims.
 
 ### Roadmap
 
 #### Phase 1: Hardening (next)
 
-1. **Integration tests.** Spawn rosshd in a test, SSH in, verify:
-   - Read commands work (echo, cat, ps, ls)
-   - Write ops blocked (rm, touch, kill)
-   - Shims work (docker ps allowed, docker exec blocked)
-   - Exit codes propagated correctly
-   - Audit log entries emitted
-   Use `russh` client in-process or shell out to `ssh`.
-   Run via `cargo test` — needs root, so guard with
-   `#[cfg(test)]` + check for CAP_SYS_ADMIN.
-
-2. **PID namespace.** Double-fork approach: unshare NEWPID in
+1. **PID namespace.** Double-fork approach: unshare NEWPID in
    child, fork again, grandchild execs shell. Bind-mount host
    /proc read-only into sandbox so `ps`/`top` show real
    processes but `kill` fails at the namespace level.
 
-3. **seccomp open/openat filtering.** Block O_WRONLY/O_RDWR/
+2. **seccomp open/openat filtering.** Block O_WRONLY/O_RDWR/
    O_CREAT/O_TRUNC on openat, except when path is under /tmp
    or shims dir. Requires seccomp argument inspection on the
    flags arg (arg index 2 for openat).
 
-4. **Allow perf_event_open and read-only ptrace.** Add seccomp
+3. **Allow perf_event_open and read-only ptrace.** Add seccomp
    rules that allow perf_event_open unconditionally and ptrace
    only with PTRACE_PEEKDATA/PTRACE_PEEKTEXT requests.
 

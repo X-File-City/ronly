@@ -8,13 +8,6 @@ use std::os::fd::OwnedFd;
 
 use crate::shims;
 
-fn setup_namespaces() -> Result<()> {
-    // Mount namespace for read-only FS.
-    // PID namespace deferred — seccomp blocks kill.
-    nix::sched::unshare(CloneFlags::CLONE_NEWNS)?;
-    Ok(())
-}
-
 fn setup_mounts(tmpfs_size_mb: u64) -> Result<()> {
     // Create dirs we need before going read-only
     std::fs::create_dir_all(shims::SHIMS_DIR).ok();
@@ -99,9 +92,7 @@ fn setup_seccomp() -> Result<()> {
 
     let filter = SeccompFilter::new(
         rules,
-        // Default: allow unlisted syscalls
         SeccompAction::Allow,
-        // Match: block listed destructive syscalls
         SeccompAction::Errno(libc::EPERM as u32),
         arch,
     )?;
@@ -116,10 +107,24 @@ fn die(msg: &str) -> ! {
     unsafe { libc::_exit(1) }
 }
 
+/// Set up the sandbox. Does a double-fork for PID namespace:
+/// - Caller (child A) unshares mount+PID, sets up mounts/shims
+/// - Forks again: child B is PID 1 in new PID namespace
+/// - Child A closes stdio, waits for B, exits with B's code
+/// - Child B applies seccomp and returns (caller execs shell)
+///
+/// Host /proc remains mounted read-only so ps/top show real
+/// processes. kill fails because target PIDs don't exist in
+/// the agent's PID namespace (seccomp also blocks as backup).
 fn sandbox_or_die(tmpfs_size_mb: u64) {
-    if let Err(e) = setup_namespaces() {
+    // Unshare mount + PID namespace
+    if let Err(e) = nix::sched::unshare(
+        CloneFlags::CLONE_NEWNS | CloneFlags::CLONE_NEWPID,
+    ) {
         die(&format!("rosshd: namespace: {}", e));
     }
+
+    // Set up mounts, shims (before second fork)
     if let Err(e) = setup_mounts(tmpfs_size_mb) {
         die(&format!("rosshd: mounts: {}", e));
     }
@@ -132,6 +137,40 @@ fn sandbox_or_die(tmpfs_size_mb: u64) {
         "PATH",
         format!("{}:{}", shims::SHIMS_DIR, path),
     );
+
+    // Double-fork for PID namespace.
+    // Child B becomes PID 1 in the new namespace.
+    use nix::unistd::ForkResult;
+    match unsafe { nix::unistd::fork() } {
+        Ok(ForkResult::Parent { child }) => {
+            // Child A: close stdio so pipe/PTY sees EOF
+            // when child B exits (not when we exit)
+            unsafe {
+                libc::close(0);
+                libc::close(1);
+                libc::close(2);
+            }
+            // Wait for child B, propagate exit code
+            match nix::sys::wait::waitpid(child, None) {
+                Ok(
+                    nix::sys::wait::WaitStatus::Exited(
+                        _, code,
+                    ),
+                ) => unsafe { libc::_exit(code) },
+                _ => unsafe { libc::_exit(1) },
+            }
+        }
+        Ok(ForkResult::Child) => {
+            // Child B: PID 1 in new namespace.
+            // /proc still shows host processes (good).
+            // Apply seccomp and return to caller.
+        }
+        Err(e) => {
+            die(&format!("rosshd: pid fork: {}", e));
+        }
+    }
+
+    // Now in child B. Apply seccomp last.
     if let Err(e) = setup_seccomp() {
         die(&format!("rosshd: seccomp: {}", e));
     }
@@ -217,11 +256,8 @@ pub fn spawn_exec(
     use nix::unistd::ForkResult;
     use std::os::fd::IntoRawFd;
 
-    // stdout pipe: child writes, parent reads
     let (stdout_r, stdout_w) = nix::unistd::pipe()?;
-    // stdin pipe: parent writes, child reads
     let (stdin_r, stdin_w) = nix::unistd::pipe()?;
-    // stderr goes to stdout
     let stdout_r_raw = stdout_r.into_raw_fd();
     let stdout_w_raw = stdout_w.into_raw_fd();
     let stdin_r_raw = stdin_r.into_raw_fd();

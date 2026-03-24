@@ -111,6 +111,14 @@ echo "--- /tmp writable ---"
 run_test "/tmp write+read" 0 \
   "echo test > /tmp/rosshd_test && cat /tmp/rosshd_test"
 
+echo "--- pid namespace ---"
+# Agent sees host processes via /proc
+run_test_grep "ps shows host init" 0 "init\\|systemd" \
+  "ps -p 1 -o comm="
+# Agent's own PID 1 is its shell (new namespace)
+run_test_grep "own pid is 1" 0 "1" \
+  "echo \$\$"
+
 echo "--- seccomp ---"
 run_test_grep "kill blocked" 1 \
   "not permitted" "kill 1 2>&1"
