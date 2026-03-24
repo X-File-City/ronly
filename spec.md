@@ -330,44 +330,26 @@ An agent can SSH into a production machine via rosshd and perform a full diagnos
 
 ### Remaining MVP Gaps
 
-**PID namespace.** Spec calls for `CLONE_NEWPID` so `kill <pid>`
-fails because the PID doesn't exist in the agent's namespace.
-Currently deferred — seccomp blocks kill syscalls as defense, but
-this removes a layer of defense-in-depth. The complication is that
-`CLONE_NEWPID` requires a double-fork (child becomes init) and
-breaks subprocesses (shims can't fork). Need to either:
-- Fork twice: unshare(CLONE_NEWPID), fork, grandchild execs shell
-- Or use clone3() with CLONE_NEWPID directly
-
-**seccomp gaps:**
-- No `open`/`openat` flag filtering (O_WRONLY, O_RDWR, O_CREAT,
-  O_TRUNC blocked on non-tmpfs paths). Read-only FS handles this
-  but seccomp would be belt-and-suspenders.
-- `perf_event_open` not explicitly allowed (spec wants CAP_PERFMON
-  support for `perf top`/`perf stat`)
-- `ptrace` blocked entirely — spec wants read-only ptrace
-  (PTRACE_ATTACH + PTRACE_PEEKDATA) for `strace`
-
 **Audit logging:** Logs every command as "allowed" — doesn't
 distinguish commands that were blocked by shims.
 
+**seccomp openat filtering:** Spec calls for blocking O_WRONLY/
+O_RDWR/O_CREAT/O_TRUNC flags on open/openat as
+belt-and-suspenders. Not implementable with seccomp because
+seccomp can't inspect path arguments — blocking write flags
+globally would break writes to /tmp. The read-only mount
+namespace is the enforcement mechanism.
+
 ### Roadmap
 
-#### Phase 1: Hardening (next)
+#### Phase 1: Hardening — DONE
 
-1. **PID namespace.** Double-fork approach: unshare NEWPID in
-   child, fork again, grandchild execs shell. Bind-mount host
-   /proc read-only into sandbox so `ps`/`top` show real
-   processes but `kill` fails at the namespace level.
-
-2. **seccomp open/openat filtering.** Block O_WRONLY/O_RDWR/
-   O_CREAT/O_TRUNC on openat, except when path is under /tmp
-   or shims dir. Requires seccomp argument inspection on the
-   flags arg (arg index 2 for openat).
-
-3. **Allow perf_event_open and read-only ptrace.** Add seccomp
-   rules that allow perf_event_open unconditionally and ptrace
-   only with PTRACE_PEEKDATA/PTRACE_PEEKTEXT requests.
+1. ~~PID namespace~~ — done via double-fork, verified with tests
+2. ~~seccomp open/openat~~ — not feasible (seccomp can't inspect
+   paths), read-only mount is sufficient
+3. ~~Read-only ptrace~~ — done, POKETEXT/POKEDATA/POKEUSER/
+   SETREGSET blocked, read ops allowed for strace
+4. ~~perf_event_open~~ — already allowed (default allow policy)
 
 #### Phase 2: Usability
 

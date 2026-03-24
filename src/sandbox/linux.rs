@@ -57,9 +57,13 @@ fn setup_mounts(tmpfs_size_mb: u64) -> Result<()> {
 
 fn setup_seccomp() -> Result<()> {
     use seccompiler::SeccompAction;
+    use seccompiler::SeccompCmpArgLen;
+    use seccompiler::SeccompCmpOp;
+    use seccompiler::SeccompCondition;
     use seccompiler::SeccompFilter;
     use seccompiler::SeccompRule;
 
+    // Unconditionally blocked syscalls
     #[allow(unused_mut)]
     let mut blocked: Vec<i64> = vec![
         libc::SYS_kill,
@@ -73,7 +77,6 @@ fn setup_seccomp() -> Result<()> {
         libc::SYS_mount,
         libc::SYS_umount2,
         libc::SYS_reboot,
-        libc::SYS_ptrace,
     ];
     #[cfg(target_arch = "x86_64")]
     blocked.extend_from_slice(&[
@@ -82,8 +85,44 @@ fn setup_seccomp() -> Result<()> {
         libc::SYS_rename,
     ]);
 
-    let rules: BTreeMap<i64, Vec<SeccompRule>> =
-        blocked.into_iter().map(|sc| (sc, vec![])).collect();
+    let mut rules: BTreeMap<i64, Vec<SeccompRule>> =
+        blocked
+            .into_iter()
+            .map(|sc| (sc, vec![]))
+            .collect();
+
+    // ptrace: block write ops, allow read ops.
+    // Read-only strace needs ATTACH, PEEKDATA,
+    // PEEKTEXT, PEEKUSER, SYSCALL, CONT, DETACH,
+    // GETREGSET, GETEVENTMSG, SEIZE, INTERRUPT.
+    // Block: POKETEXT, POKEDATA, POKEUSER, SETREGS,
+    // SETFPREGS, SETREGSET, SETSIGINFO.
+    #[allow(unused_mut)]
+    let mut ptrace_write_ops: Vec<u64> = vec![
+        libc::PTRACE_POKETEXT as u64,
+        libc::PTRACE_POKEDATA as u64,
+        libc::PTRACE_POKEUSER as u64,
+        libc::PTRACE_SETREGSET as u64,
+    ];
+    #[cfg(target_arch = "x86_64")]
+    ptrace_write_ops.extend_from_slice(&[
+        libc::PTRACE_SETREGS as u64,
+        libc::PTRACE_SETFPREGS as u64,
+    ]);
+    let ptrace_rules: Vec<SeccompRule> = ptrace_write_ops
+        .into_iter()
+        .map(|op| {
+            SeccompRule::new(vec![SeccompCondition::new(
+                0, // arg 0 = ptrace request
+                SeccompCmpArgLen::Dword,
+                SeccompCmpOp::Eq,
+                op,
+            )
+            .unwrap()])
+            .unwrap()
+        })
+        .collect();
+    rules.insert(libc::SYS_ptrace, ptrace_rules);
 
     let arch =
         std::env::consts::ARCH.try_into().map_err(|e| {
