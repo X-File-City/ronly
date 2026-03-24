@@ -173,7 +173,6 @@ pub fn spawn_shell(
 ) -> Result<(nix::unistd::Pid, OwnedFd)> {
     use nix::pty::openpty;
     use nix::unistd::ForkResult;
-    use std::os::fd::AsRawFd;
     use std::os::fd::IntoRawFd;
 
     let pty = openpty(None, None)?;

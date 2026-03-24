@@ -305,6 +305,112 @@ Test by:
 
 An agent can SSH into a production machine via sshro and perform a full diagnostic investigation — check process state, read logs, query Kubernetes, inspect Docker containers, run perf — without any possibility of modifying the system. The admin's confidence that the agent cannot cause harm is based on kernel enforcement, not on trusting the agent's prompt or an LLM-based reviewer.
 
+## Implementation Status (2026-03-23)
+
+### What's Done
+
+The MVP core is working. Single binary, tested on aarch64 Linux
+via lima:
+
+- SSH server (`russh` 0.58) with pubkey auth
+- Read-only filesystem via `unshare(CLONE_NEWNS)` + remount
+- seccomp-bpf blocking kill, unlink, rename, truncate, mount,
+  reboot, ptrace (via `seccompiler`)
+- Writable `/tmp` on tmpfs (configurable size)
+- Docker shim (ps/logs/inspect/stats/top/images/info/version/
+  events/diff allowed; everything else blocked)
+- kubectl shim (get/describe/logs/top/explain/version/
+  cluster-info/api-resources/api-versions/config view/auth can-i
+  allowed; everything else blocked)
+- JSON audit logging to stdout
+- Host key auto-generation via ssh-keygen
+- Exec mode uses pipes (clean output), shell mode uses PTY
+- CLI: `--port`, `--host-key`, `--authorized-keys`,
+  `--tmpfs-size-mb`, `--log`
+
+### What's Missing from MVP Spec
+
+**PID namespace.** Spec calls for `CLONE_NEWPID` so `kill <pid>`
+fails because the PID doesn't exist in the agent's namespace.
+Currently deferred — seccomp blocks kill syscalls as defense, but
+this removes a layer of defense-in-depth. The complication is that
+`CLONE_NEWPID` requires a double-fork (child becomes init) and
+breaks subprocesses (shims can't fork). Need to either:
+- Fork twice: unshare(CLONE_NEWPID), fork, grandchild execs shell
+- Or use clone3() with CLONE_NEWPID directly
+
+**seccomp gaps:**
+- No `open`/`openat` flag filtering (O_WRONLY, O_RDWR, O_CREAT,
+  O_TRUNC blocked on non-tmpfs paths). Read-only FS handles this
+  but seccomp would be belt-and-suspenders.
+- `perf_event_open` not explicitly allowed (spec wants CAP_PERFMON
+  support for `perf top`/`perf stat`)
+- `ptrace` blocked entirely — spec wants read-only ptrace
+  (PTRACE_ATTACH + PTRACE_PEEKDATA) for `strace`
+
+**Audit logging:** Logs every command as "allowed" — doesn't
+distinguish commands that were blocked by shims. Would need
+shim-level reporting or shell exit code tracking.
+
+**No tests.** Zero unit tests, zero integration tests.
+
+### Roadmap
+
+#### Phase 1: Hardening (next)
+
+1. **Integration tests.** Spawn sshro in a test, SSH in, verify:
+   - Read commands work (echo, cat, ps, ls)
+   - Write ops blocked (rm, touch, kill)
+   - Shims work (docker ps allowed, docker exec blocked)
+   - Exit codes propagated correctly
+   - Audit log entries emitted
+   Use `russh` client in-process or shell out to `ssh`.
+   Run via `cargo test` — needs root, so guard with
+   `#[cfg(test)]` + check for CAP_SYS_ADMIN.
+
+2. **PID namespace.** Double-fork approach: unshare NEWPID in
+   child, fork again, grandchild execs shell. Bind-mount host
+   /proc read-only into sandbox so `ps`/`top` show real
+   processes but `kill` fails at the namespace level.
+
+3. **seccomp open/openat filtering.** Block O_WRONLY/O_RDWR/
+   O_CREAT/O_TRUNC on openat, except when path is under /tmp
+   or shims dir. Requires seccomp argument inspection on the
+   flags arg (arg index 2 for openat).
+
+4. **Allow perf_event_open and read-only ptrace.** Add seccomp
+   rules that allow perf_event_open unconditionally and ptrace
+   only with PTRACE_PEEKDATA/PTRACE_PEEKTEXT requests.
+
+#### Phase 2: Usability
+
+5. **Config file.** `/etc/sshro/config.toml` with TOML parsing.
+   CLI flags override config. Add `[filesystem].writable_paths`
+   for additional tmpfs overlays.
+
+6. **Custom shim directories.** `--shims /etc/sshro/shims`
+   flag. Prepend custom shims to PATH before built-in shims.
+
+7. **systemctl shim.** Allow status/list-units/list-unit-files/
+   show/is-active/is-enabled/is-failed/cat. Block everything
+   else.
+
+8. **Audit log improvements.** Log to file (not just stdout).
+   Track shim block events. Include exit codes in audit entries.
+
+#### Phase 3: Network & Database (v2)
+
+9. **Network namespace.** New network namespace with veth pair.
+   Lightweight proxy for egress filtering. Default: allow
+   RFC 1918 only. `--allow-egress` flag.
+
+10. **Database shims.** psql wrapper that forces
+    `default_transaction_read_only = ON`. mysql wrapper that
+    forces `SET SESSION TRANSACTION READ ONLY`.
+
+11. **Session recording.** Record all I/O for replay. Store as
+    asciicast or custom format.
+
 ## Future Directions
 
 **As a product:** Every company deploying AI agents to production will need something like sshro. The current alternatives (full access, LLM-based review, manual allowlists) are all inadequate. A single-binary tool that provides guaranteed read-only access with zero configuration overhead could see broad adoption.
