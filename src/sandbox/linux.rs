@@ -13,7 +13,10 @@ fn die(msg: &str) -> ! {
     unsafe { libc::_exit(1) }
 }
 
-fn setup_mounts(args: &Args) -> Result<()> {
+fn setup_mounts(
+    args: &Args,
+    self_exe: Option<&std::path::Path>,
+) -> Result<()> {
     // Create dirs before going read-only
     std::fs::create_dir_all(shims::SHIMS_DIR).ok();
     for p in &args.writable {
@@ -41,7 +44,23 @@ fn setup_mounts(args: &Args) -> Result<()> {
         None::<&str>,
     )?;
 
-    // Writable /tmp
+    // Writable shims dir — mount BEFORE /tmp so the
+    // binary (which may live under /tmp) is still visible
+    // for bind-mounting.
+    nix::mount::mount(
+        Some("tmpfs"),
+        shims::SHIMS_DIR,
+        Some("tmpfs"),
+        MsFlags::MS_NOSUID | MsFlags::MS_NODEV,
+        Some("size=1m"),
+    )?;
+
+    // Install shims via bind-mount while exe is visible
+    if let Some(exe) = self_exe {
+        shims::install_shims(exe)?;
+    }
+
+    // Writable /tmp (may shadow the binary's location)
     let size = &args.tmpfs_size;
     nix::mount::mount(
         Some("tmpfs"),
@@ -62,15 +81,6 @@ fn setup_mounts(args: &Args) -> Result<()> {
             Some(format!("size={}", size).as_str()),
         )?;
     }
-
-    // Writable shims dir
-    nix::mount::mount(
-        Some("tmpfs"),
-        shims::SHIMS_DIR,
-        Some("tmpfs"),
-        MsFlags::MS_NOSUID | MsFlags::MS_NODEV,
-        Some("size=8m"),
-    )?;
 
     Ok(())
 }
@@ -156,19 +166,17 @@ fn setup_seccomp() -> Result<()> {
 }
 
 pub fn run(args: Args) -> Result<()> {
-    // Read our binary before mounts (it may be under /tmp)
-    let self_bin = if !args.no_shims {
-        Some(shims::read_self_exe()?)
+    // Resolve exe path before mounts change the FS
+    let self_exe = if !args.no_shims {
+        Some(std::fs::read_link("/proc/self/exe")?)
     } else {
         None
     };
 
-    // Unshare mount + PID namespace
     nix::sched::unshare(
         CloneFlags::CLONE_NEWNS | CloneFlags::CLONE_NEWPID,
     )?;
 
-    // Fork for PID namespace — child is PID 1
     match unsafe { nix::unistd::fork()? } {
         ForkResult::Parent { child } => {
             let status =
@@ -182,24 +190,22 @@ pub fn run(args: Args) -> Result<()> {
             std::process::exit(code);
         }
         ForkResult::Child => {
-            child_main(args, self_bin);
+            child_main(args, self_exe);
         }
     }
 }
 
 fn child_main(
     args: Args,
-    self_bin: Option<Vec<u8>>,
+    self_exe: Option<std::path::PathBuf>,
 ) -> ! {
-    if let Err(e) = setup_mounts(&args) {
+    if let Err(e) =
+        setup_mounts(&args, self_exe.as_deref())
+    {
         die(&format!("ronly: mounts: {}", e));
     }
 
-    if let Some(bin) = &self_bin {
-        if let Err(e) = shims::install_shims(bin) {
-            die(&format!("ronly: shims: {}", e));
-        }
-
+    if self_exe.is_some() {
         // PATH: extra shims > built-in shims > system
         let sys_path =
             std::env::var("PATH").unwrap_or_default();

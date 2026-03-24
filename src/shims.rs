@@ -9,25 +9,25 @@ pub const SHIMS_DIR: &str = "/usr/lib/ronly/shims";
 const SHIMMED_TOOLS: &[&str] =
     &["docker", "kubectl"];
 
-/// Read our own binary into memory. Must be called BEFORE
-/// mount setup (while the host FS is still visible), since
-/// the binary might be under /tmp which gets remounted.
-pub fn read_self_exe() -> Result<Vec<u8>> {
-    Ok(fs::read("/proc/self/exe")?)
-}
-
-/// Write copies of the binary into SHIMS_DIR under each
-/// tool name. Must be called AFTER shims tmpfs is mounted.
-pub fn install_shims(binary: &[u8]) -> Result<()> {
-    use std::os::unix::fs::PermissionsExt;
+/// Bind-mount our own binary into SHIMS_DIR under each
+/// tool name. `exe` must be the resolved path to our
+/// binary, obtained before any mounts changed.
+#[cfg(target_os = "linux")]
+pub fn install_shims(
+    exe: &std::path::Path,
+) -> Result<()> {
+    use nix::mount::MsFlags;
     let dir = Path::new(SHIMS_DIR);
     fs::create_dir_all(dir)?;
     for name in SHIMMED_TOOLS {
         let dest = dir.join(name);
-        fs::write(&dest, binary)?;
-        fs::set_permissions(
+        fs::write(&dest, b"")?;
+        nix::mount::mount(
+            Some(exe),
             &dest,
-            fs::Permissions::from_mode(0o755),
+            None::<&str>,
+            MsFlags::MS_BIND,
+            None::<&str>,
         )?;
     }
     Ok(())
