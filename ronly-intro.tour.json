@@ -1,0 +1,137 @@
+{
+  "id": "ronly-intro",
+  "title": "ronly: Read-Only Sandbox for Agents",
+  "description": "A guided walkthrough of ronly's architecture — how a single binary creates a kernel-enforced read-only jail using Linux namespaces, seccomp-bpf, and PATH shims.",
+  "version": "1.0.0",
+  "steps": [
+    {
+      "id": "overview",
+      "title": "A Tiny, Focused Codebase",
+      "description": "ronly is roughly 500 lines of Rust that builds a read-only sandbox and then gets out of the way. The entire project fits in a handful of files: a CLI entry point, the Linux sandbox core, tool shims, integration tests, and a spec. No async runtime, no frameworks — just synchronous setup followed by exec.",
+      "focusDirectory": "",
+      "colorMode": "fileTypes"
+    },
+    {
+      "id": "entry-point",
+      "title": "Entry Point: Dual-Mode Binary",
+      "description": "The entry point does two things depending on how it's invoked. If the program name is a tool name like 'docker', it runs as a shim and blocks write operations. Otherwise it parses CLI flags and launches the sandbox. This dual-mode trick lets a single binary serve as both the sandbox launcher and every tool shim — installed via bind-mounts at zero disk cost.",
+      "focusDirectory": "src",
+      "colorMode": "fileTypes",
+      "highlightLayers": [
+        {
+          "id": "entry",
+          "name": "Entry Point",
+          "color": "#3b82f6",
+          "items": [
+            { "path": "src/main.rs", "type": "file" }
+          ],
+          "opacity": 0.8,
+          "renderStrategy": "border"
+        }
+      ]
+    },
+    {
+      "id": "sandbox-core",
+      "title": "The Sandbox: Three Isolation Layers",
+      "description": "This is the heart of ronly. It creates Linux namespaces (mount and PID), remounts root read-only, sets up a writable scratch area for temporary files, bind-mounts the host process tree for visibility, and loads a seccomp-bpf filter as defense-in-depth. After setup, it execs the user's shell — ronly is replaced by the shell process and adds zero runtime overhead. A separate platform gate module ensures a clear error on non-Linux systems.",
+      "focusDirectory": "src/sandbox",
+      "colorMode": "fileTypes",
+      "highlightLayers": [
+        {
+          "id": "sandbox-impl",
+          "name": "Sandbox Implementation",
+          "color": "#ef4444",
+          "items": [
+            { "path": "src/sandbox/linux.rs", "type": "file" }
+          ],
+          "opacity": 0.8,
+          "renderStrategy": "border"
+        },
+        {
+          "id": "platform-gate",
+          "name": "Platform Gate",
+          "color": "#f59e0b",
+          "items": [
+            { "path": "src/sandbox.rs", "type": "file" }
+          ],
+          "opacity": 0.7,
+          "renderStrategy": "border"
+        }
+      ]
+    },
+    {
+      "id": "shims",
+      "title": "Tool Shims: Socket/API Enforcement",
+      "description": "Read-only mounts don't stop tools that talk over Unix sockets or HTTP APIs. The shim module intercepts these by bind-mounting the ronly binary into a shims directory under each tool name. When the shell resolves 'docker' on PATH, it finds ronly, which pattern-matches the subcommand: read-only operations like listing containers and reading logs pass through to the real binary, while write operations like exec and stop are blocked with a clear error message.",
+      "focusDirectory": "src",
+      "colorMode": "fileTypes",
+      "highlightLayers": [
+        {
+          "id": "shims-layer",
+          "name": "Tool Shims",
+          "color": "#8b5cf6",
+          "items": [
+            { "path": "src/shims.rs", "type": "file" }
+          ],
+          "opacity": 0.8,
+          "renderStrategy": "border"
+        }
+      ]
+    },
+    {
+      "id": "testing",
+      "title": "Integration Tests: Proving the Isolation",
+      "description": "The integration tests exercise every isolation layer end-to-end: reads succeed, writes fail, the scratch area is writable, the PID namespace shows host processes but the sandboxed shell is process 1, seccomp blocks signals to outside processes, and shims block destructive Docker and kubectl subcommands. Tests require root to run since namespace creation needs elevated privileges.",
+      "focusDirectory": "tests",
+      "colorMode": "fileTypes",
+      "highlightLayers": [
+        {
+          "id": "tests-layer",
+          "name": "Integration Tests",
+          "color": "#10b981",
+          "items": [
+            { "path": "tests/integration.rs", "type": "file" }
+          ],
+          "opacity": 0.8,
+          "renderStrategy": "border"
+        }
+      ]
+    },
+    {
+      "id": "config-and-ci",
+      "title": "Build & CI",
+      "description": "ronly has minimal dependencies: one crate each for arg parsing, namespace and mount syscalls, seccomp-bpf filter construction, and raw syscall constants. The build configuration includes a Lima target for cross-compiling to Linux from macOS. CI runs on GitHub Actions with a Linux runner since the sandbox requires Linux namespaces.",
+      "focusDirectory": "",
+      "colorMode": "fileTypes",
+      "highlightLayers": [
+        {
+          "id": "build-config",
+          "name": "Build Configuration",
+          "color": "#f59e0b",
+          "items": [
+            { "path": "Cargo.toml", "type": "file" },
+            { "path": "Makefile", "type": "file" }
+          ],
+          "opacity": 0.7,
+          "renderStrategy": "border"
+        },
+        {
+          "id": "ci",
+          "name": "CI Pipeline",
+          "color": "#6366f1",
+          "items": [
+            { "path": ".github/workflows/test.yml", "type": "file" }
+          ],
+          "opacity": 0.7,
+          "renderStrategy": "border"
+        }
+      ]
+    },
+    {
+      "id": "full-picture",
+      "title": "The Full Picture",
+      "description": "ronly is a cage builder, not a shell. It sets up three redundant isolation layers (read-only mounts, PID namespace, seccomp-bpf), installs PATH shims for socket-based tools, execs your real shell, and then disappears. The entire implementation is auditable in an afternoon. The spec covers the complete design rationale, trust model, and future work including network namespaces, database shims, and cgroup integration.",
+      "focusDirectory": ""
+    }
+  ]
+}
