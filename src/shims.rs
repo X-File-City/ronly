@@ -20,7 +20,8 @@
 // Bind-mounts share the same inode as the original
 // binary — no copies, zero extra disk space.
 
-#![allow(dead_code)]
+#![allow(dead_code, unused_imports)]
+use std::fs;
 use std::path::Path;
 
 pub const SHIMS_DIR: &str = "/usr/lib/ronly/shims";
